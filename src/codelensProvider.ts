@@ -6,7 +6,7 @@ export class CodelensProvider implements vscode.CodeLensProvider {
   public readonly onDidChangeCodeLenses: vscode.Event<void> = this._onDidChangeCodeLenses.event;
 
   constructor() {
-    this.regex = /@(Get|Post|Put|Delete|Patch)Mapping/g;
+    this.regex = /@(Get|Post|Put|Delete|Patch)Mapping(\(.*\))?/g;
     vscode.workspace.onDidChangeTextDocument((_) => {
       this._onDidChangeCodeLenses.fire();
     });
