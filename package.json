@@ -7,40 +7,112 @@
     "vscode": "^1.103.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Testing"
+  ],
+  "keywords": [
+    "spring",
+    "spring boot",
+    "http",
+    "rest",
+    "api",
+    "testing",
+    "codelens"
   ],
   "activationEvents": [
     "onLanguage:java"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Spring Boot HTTP Client",
+      "properties": {
+        "springboot-http-client.enableCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable CodeLens for Spring Boot mapping annotations"
+        },
+        "springboot-http-client.useEnvironmentVariables": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use environment variables in generated .http files"
+        },
+        "springboot-http-client.defaultPort": {
+          "type": "number",
+          "default": 8080,
+          "description": "Default port for HTTP requests when not detected from configuration"
+        },
+        "springboot-http-client.defaultHost": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Default host for HTTP requests"
+        },
+        "springboot-http-client.showResponseInNewTab": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show HTTP response in a new editor tab"
+        },
+        "springboot-http-client.requestTimeout": {
+          "type": "number",
+          "default": 30000,
+          "description": "Request timeout in milliseconds"
+        }
+      }
+    },
     "commands": [
       {
         "command": "springboot.sendRequest",
-        "title": "Spring Boot: Send Request"
+        "title": "Send HTTP Request",
+        "category": "Spring Boot"
       },
       {
         "command": "springboot.generateHttpRequest",
-        "title": "Spring Boot: Generate .http file"
+        "title": "Generate .http File",
+        "category": "Spring Boot"
+      },
+      {
+        "command": "springboot.copyAsCurl",
+        "title": "Copy as cURL",
+        "category": "Spring Boot"
       },
       {
         "command": "springboot.enableCodeLens",
-        "title": "Spring Boot: Enable CodeLens"
+        "title": "Enable CodeLens",
+        "category": "Spring Boot"
       },
       {
         "command": "springboot.disableCodeLens",
-        "title": "Spring Boot: Disable CodeLens"
+        "title": "Disable CodeLens",
+        "category": "Spring Boot"
       }
     ],
-    "configuration": {
-      "title": "Spring Boot HTTP Generator",
-      "properties": {
-        "codelens-sample.enableCodeLens": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable/Disable Spring Boot HTTP Generator CodeLens"
+    "menus": {
+      "editor/context": [
+        {
+          "when": "editorTextFocus && resourceExtname == .java",
+          "command": "springboot.generateHttpRequest",
+          "group": "springboot"
+        },
+        {
+          "when": "editorTextFocus && resourceExtname == .java",
+          "command": "springboot.copyAsCurl",
+          "group": "springboot"
         }
-      }
+      ],
+      "commandPalette": [
+        {
+          "command": "springboot.sendRequest",
+          "when": "false"
+        },
+        {
+          "command": "springboot.generateHttpRequest",
+          "when": "false"
+        },
+        {
+          "command": "springboot.copyAsCurl",
+          "when": "false"
+        }
+      ]
     }
   },
   "scripts": {

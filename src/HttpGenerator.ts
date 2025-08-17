@@ -1,110 +1,615 @@
 import * as vscode from 'vscode';
-import { IRequest } from './types';
-import { AppDetector } from './AppDetector';
-import { ActuatorClient } from './ActuatorClient';
+import { IRequest, HttpMethod } from './types';
 import { BodyGenerator } from './BodyGenerator';
-import axios from 'axios';
+import axios, { AxiosRequestConfig } from 'axios';
+
+interface SpringMapping {
+  method: HttpMethod;
+  path: string;
+  consumes?: string[];
+  produces?: string[];
+}
+
+interface MethodParameter {
+  annotation?: string;
+  type: string;
+  name: string;
+  value?: string;
+}
 
 export class HttpGenerator {
+  private static readonly GENERATION_TIMEOUT = 10000; // 10 seconds
+  private static readonly MAX_URL_LENGTH = 2048;
+  
   public static async generate(document: vscode.TextDocument, range: vscode.Range): Promise<IRequest | undefined> {
-    const text = document.getText(range);
-    const methodMatch = text.match(/@(Get|Post|Put|Delete|Patch)Mapping(\(.*\))?/);
-    if (!methodMatch) {
-      return;
-    }
-
-    const methodName = document.getText(document.lineAt(range.start.line + 1).range).match(/(\w+)\(.*\)/)?.[1];
-    if (!methodName) {
-      return;
-    }
-
-    const mappings = await ActuatorClient.getMappings();
-    const mapping = mappings.find(m => m.handler.includes(methodName));
-
-    let method: IRequest['method'];
-    let path: string;
-    let url: string;
-
-    if (mapping) {
-      method = mapping.details.requestMappingConditions.methods[0].toUpperCase() as IRequest['method'];
-      path = mapping.details.requestMappingConditions.patterns[0];
-      const port = await AppDetector.getPort();
-      url = `http://localhost:${port}${path}`;
-    } else {
-      const methodMatch = text.match(/@(Get|Post|Put|Delete|Patch)Mapping(\(.*\))?/);
-      if (!methodMatch) {
-        return;
+    try {
+      // Add timeout to prevent hanging
+      return await Promise.race([
+        this.generateInternal(document, range),
+        new Promise<IRequest | undefined>((_, reject) => 
+          setTimeout(() => reject(new Error('Request generation timeout')), this.GENERATION_TIMEOUT)
+        )
+      ]);
+    } catch (error) {
+      console.error('Error generating HTTP request:', error);
+      if (error instanceof Error && error.message.includes('timeout')) {
+        vscode.window.showErrorMessage('Request generation timed out - the code structure may be too complex');
+      } else {
+        vscode.window.showErrorMessage(`Failed to generate HTTP request: ${error}`);
       }
-      method = methodMatch[1].toUpperCase() as IRequest['method'];
-      const pathMatch = text.match(/@(?:Get|Post|Put|Delete|Patch)Mapping\("([^"]*)"\)/);
-      path = pathMatch ? pathMatch[1] : '';
-      url = `{{host}}${path}`;
+      return undefined;
+    }
+  }
+
+  private static async generateInternal(document: vscode.TextDocument, range: vscode.Range): Promise<IRequest | undefined> {
+    const text = document.getText(range);
+    const fullText = document.getText();
+    
+    // Validate input
+    if (!text.trim() || text.length > 10000) {
+      throw new Error('Invalid or too large code selection');
     }
 
-    const methodSignature = document.getText(document.lineAt(range.start.line + 1).range);
-    const paramsMatch = methodSignature.match(/\((.*)\)/);
-    let body: string | undefined;
-    const queryParams: string[] = [];
+    // Extract mapping information
+    const mapping = this.extractMappingInfo(text);
+    if (!mapping) {
+      throw new Error('Could not parse Spring mapping annotation');
+    }
 
-    if (paramsMatch) {
-      const params = paramsMatch[1].split(',').map(p => p.trim());
-      for (const param of params) {
-        if (param.startsWith('@RequestBody')) {
-          const requestBodyMatch = param.match(/@RequestBody\s+(\w+)/);
-          if (requestBodyMatch) {
-            body = await BodyGenerator.generate(requestBodyMatch[1]);
+    // Get class-level request mapping
+    const classMapping = this.extractClassMapping(fullText, document.positionAt(range.start.character).line);
+    
+    // Extract method information
+    const methodInfo = this.extractMethodInfo(text);
+    if (!methodInfo) {
+      throw new Error('Could not parse method signature');
+    }
+
+    // Build complete path
+    const basePath = classMapping || '';
+    const fullPath = this.combinePaths(basePath, mapping.path);
+    
+    // Process method parameters
+    const { url, body, headers, queryParams } = await this.processMethodParameters(
+      methodInfo.parameters, 
+      fullPath, 
+      mapping.method
+    );
+
+    // Validate URL length
+    if (url.length > this.MAX_URL_LENGTH) {
+      throw new Error('Generated URL is too long');
+    }
+
+    // Set content type headers
+    const finalHeaders = { ...headers };
+    if (body && !finalHeaders['Content-Type']) {
+      finalHeaders['Content-Type'] = mapping.consumes?.[0] || 'application/json';
+    }
+    if (!finalHeaders['Accept']) {
+      finalHeaders['Accept'] = mapping.produces?.[0] || 'application/json';
+    }
+
+    const port = await this.detectPort();
+    const baseUrl = `http://localhost:${port}`;
+    const finalUrl = url.startsWith('http') ? url : `${baseUrl}${url}`;
+
+    return {
+      method: mapping.method,
+      url: finalUrl,
+      body: body,
+      headers: finalHeaders
+    };
+  }
+
+  private static extractMappingInfo(annotationText: string): SpringMapping | undefined {
+    try {
+      // Enhanced patterns with better error handling
+      const patterns = [
+        /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*"([^"]+)"\s*\)/,
+        /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*value\s*=\s*"([^"]+)"[^)]*\)/,
+        /@RequestMapping\s*\([^)]*method\s*=\s*RequestMethod\.(\w+)[^)]*(?:path|value)\s*=\s*"([^"]+)"[^)]*\)/,
+        /@RequestMapping\s*\([^)]*(?:path|value)\s*=\s*"([^"]+)"[^)]*method\s*=\s*RequestMethod\.(\w+)[^)]*\)/,
+        /@RequestMapping\s*\(\s*"([^"]+)"\s*\)/,
+        /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(\s*\))?$/
+      ];
+
+      for (const pattern of patterns) {
+        const match = pattern.exec(annotationText);
+        if (match) {
+          let method: HttpMethod;
+          let path: string;
+
+          if (match[0].includes('RequestMapping')) {
+            if (match[2] && match[1]) {
+              // Pattern: method then path
+              method = match[1].toUpperCase() as HttpMethod;
+              path = match[2] || '';
+            } else if (match[1] && match[2]) {
+              // Pattern: path then method
+              path = match[1] || '';
+              method = match[2]?.toUpperCase() as HttpMethod || 'GET';
+            } else {
+              method = 'GET';
+              path = match[1] || '';
+            }
+          } else {
+            method = match[1].toUpperCase() as HttpMethod;
+            path = match[2] || '';
           }
-        } else if (!param.startsWith('@')) {
-          const paramMatch = param.match(/(\w+)\s+(\w+)/);
-          if (paramMatch) {
-            const className = paramMatch[1];
-            const fields = await BodyGenerator.generate(className);
-            if (fields) {
-              try {
-                const parsedFields = JSON.parse(fields);
-                for (const key in parsedFields) {
-                  queryParams.push(`${key}=`);
-                }
-              } catch (e) {
-                // Silently fail for now, or add logging
-              }
+
+          // Extract consumes and produces safely
+          const consumes = this.extractArrayAttribute(annotationText, 'consumes');
+          const produces = this.extractArrayAttribute(annotationText, 'produces');
+
+          return { method, path, consumes, produces };
+        }
+      }
+    } catch (error) {
+      console.error('Error extracting mapping info:', error);
+    }
+
+    return undefined;
+  }
+
+  private static extractArrayAttribute(text: string, attribute: string): string[] | undefined {
+    try {
+      const pattern = new RegExp(`${attribute}\\s*=\\s*\\{([^}]+)\\}`, 'i');
+      const match = pattern.exec(text);
+      if (match) {
+        return match[1].split(',')
+          .map(s => s.trim().replace(/"/g, ''))
+          .filter(s => s.length > 0);
+      }
+
+      const singlePattern = new RegExp(`${attribute}\\s*=\\s*"([^"]+)"`, 'i');
+      const singleMatch = singlePattern.exec(text);
+      if (singleMatch) {
+        return [singleMatch[1]];
+      }
+    } catch (error) {
+      console.error(`Error extracting ${attribute} attribute:`, error);
+    }
+
+    return undefined;
+  }
+
+  private static extractClassMapping(fullText: string, methodLine: number): string | undefined {
+    try {
+      const lines = fullText.split('\n');
+      
+      // Look backwards from method line to find class declaration (max 50 lines)
+      for (let i = Math.max(0, methodLine - 50); i <= methodLine; i++) {
+        const line = lines[i];
+        
+        // Found class declaration
+        if (line.includes('class ')) {
+          // Look backwards for class-level @RequestMapping (max 10 lines before class)
+          for (let j = Math.max(0, i - 10); j <= i; j++) {
+            const classLine = lines[j];
+            const mappingMatch = classLine.match(/@RequestMapping\s*\(\s*"([^"]+)"\s*\)/);
+            if (mappingMatch) {
+              return mappingMatch[1];
+            }
+          }
+          break;
+        }
+      }
+    } catch (error) {
+      console.error('Error extracting class mapping:', error);
+    }
+    
+    return undefined;
+  }
+
+  private static extractMethodInfo(text: string): { name: string, parameters: MethodParameter[] } | undefined {
+    try {
+      // Find method declaration with better error handling
+      const methodPattern = /(public|private|protected)?\s*(static)?\s*[\w<>\[\],\s]+\s+(\w+)\s*\(([^)]*)\)/;
+      const methodMatch = methodPattern.exec(text);
+      
+      if (!methodMatch) {
+        return undefined;
+      }
+
+      const methodName = methodMatch[3];
+      const paramString = methodMatch[4].trim();
+      
+      const parameters: MethodParameter[] = [];
+      
+      if (paramString) {
+        const params = this.splitParameters(paramString);
+        
+        for (const param of params) {
+          const paramInfo = this.parseParameter(param.trim());
+          if (paramInfo) {
+            parameters.push(paramInfo);
+          }
+        }
+      }
+
+      return { name: methodName, parameters };
+    } catch (error) {
+      console.error('Error extracting method info:', error);
+      return undefined;
+    }
+  }
+
+  private static splitParameters(paramString: string): string[] {
+    const params: string[] = [];
+    let current = '';
+    let depth = 0;
+    let inString = false;
+    
+    try {
+      for (let i = 0; i < paramString.length; i++) {
+        const char = paramString[i];
+        
+        if (char === '"' && (i === 0 || paramString[i-1] !== '\\')) {
+          inString = !inString;
+        }
+        
+        if (!inString) {
+          if (char === '<' || char === '(') {
+            depth++;
+          } else if (char === '>' || char === ')') {
+            depth--;
+          } else if (char === ',' && depth === 0) {
+            if (current.trim()) {
+              params.push(current.trim());
+            }
+            current = '';
+            continue;
+          }
+        }
+        
+        current += char;
+      }
+      
+      if (current.trim()) {
+        params.push(current.trim());
+      }
+    } catch (error) {
+      console.error('Error splitting parameters:', error);
+      return [paramString]; // Fallback to single parameter
+    }
+    
+    return params;
+  }
+
+  private static parseParameter(param: string): MethodParameter | undefined {
+    try {
+      // Parse parameter with annotation
+      const annotationMatch = param.match(/(@\w+)(?:\([^)]*\))?\s+(.+)/);
+      
+      if (annotationMatch) {
+        const annotation = annotationMatch[1];
+        const remaining = annotationMatch[2];
+        const typeNameMatch = remaining.match(/([\w<>\[\],\s]+)\s+(\w+)$/);
+        
+        if (typeNameMatch) {
+          return {
+            annotation: annotation,
+            type: typeNameMatch[1].trim(),
+            name: typeNameMatch[2].trim()
+          };
+        }
+      } else {
+        // Parse parameter without annotation
+        const typeNameMatch = param.match(/([\w<>\[\],\s]+)\s+(\w+)$/);
+        if (typeNameMatch) {
+          return {
+            type: typeNameMatch[1].trim(),
+            name: typeNameMatch[2].trim()
+          };
+        }
+      }
+    } catch (error) {
+      console.error('Error parsing parameter:', error);
+    }
+    
+    return undefined;
+  }
+
+  private static async processMethodParameters(
+    parameters: MethodParameter[], 
+    basePath: string, 
+    method: HttpMethod
+  ): Promise<{ url: string, body?: string, headers: { [key: string]: string }, queryParams: string[] }> {
+    
+    let url = basePath;
+    let body: string | undefined;
+    const headers: { [key: string]: string } = {};
+    const queryParams: string[] = [];
+    
+    try {
+      for (const param of parameters) {
+        switch (param.annotation) {
+          case '@RequestBody':
+            if (!body) { // Only generate one body
+              body = await BodyGenerator.generate(param.type);
+            }
+            break;
+            
+          case '@PathVariable':
+            const pathVarName = this.extractAnnotationValue(param.annotation) || param.name;
+            const pathVarValue = this.generateSamplePathValue(param.type);
+            url = url.replace(`{${pathVarName}}`, pathVarValue);
+            break;
+            
+          case '@RequestParam':
+            const paramName = this.extractAnnotationValue(param.annotation) || param.name;
+            const paramValue = this.generateSampleQueryValue(param.type);
+            queryParams.push(`${paramName}=${paramValue}`);
+            break;
+            
+          case '@RequestHeader':
+            const headerName = this.extractAnnotationValue(param.annotation) || param.name;
+            const headerValue = this.generateSampleHeaderValue(param.type, headerName);
+            headers[headerName] = headerValue;
+            break;
+            
+          default:
+            // Handle parameters without annotations (likely @RequestParam for GET)
+            if (!param.annotation && method === 'GET' && queryParams.length < 10) {
+              const defaultParamValue = this.generateSampleQueryValue(param.type);
+              queryParams.push(`${param.name}=${defaultParamValue}`);
+            }
+            break;
+        }
+      }
+      
+      // Add query parameters to URL
+      if (queryParams.length > 0) {
+        const separator = url.includes('?') ? '&' : '?';
+        const queryString = queryParams.join('&');
+        url += separator + queryString;
+      }
+      
+    } catch (error) {
+      console.error('Error processing method parameters:', error);
+    }
+    
+    return { url, body, headers, queryParams };
+  }
+
+  private static extractAnnotationValue(annotation: string): string | undefined {
+    try {
+      const valueMatch = annotation.match(/@\w+\s*\(\s*"([^"]+)"\s*\)/);
+      if (valueMatch) {
+        return valueMatch[1];
+      }
+      
+      const namedValueMatch = annotation.match(/@\w+\s*\([^)]*value\s*=\s*"([^"]+)"[^)]*\)/);
+      if (namedValueMatch) {
+        return namedValueMatch[1];
+      }
+    } catch (error) {
+      console.error('Error extracting annotation value:', error);
+    }
+    
+    return undefined;
+  }
+
+  private static generateSamplePathValue(type: string): string {
+    switch (type.toLowerCase()) {
+      case 'string': return 'sample-id';
+      case 'long':
+      case 'integer':
+      case 'int': return '123';
+      case 'uuid': return '550e8400-e29b-41d4-a716-446655440000';
+      default: return 'sample-value';
+    }
+  }
+
+  private static generateSampleQueryValue(type: string): string {
+    switch (type.toLowerCase()) {
+      case 'string': return 'sample';
+      case 'boolean': return 'true';
+      case 'integer':
+      case 'int':
+      case 'long': return '10';
+      case 'double':
+      case 'float': return '10.5';
+      default: return 'value';
+    }
+  }
+
+  private static generateSampleHeaderValue(type: string, headerName: string): string {
+    const lowerHeaderName = headerName.toLowerCase();
+    
+    if (lowerHeaderName.includes('authorization') || lowerHeaderName.includes('auth')) {
+      return 'Bearer your-token-here';
+    }
+    if (lowerHeaderName.includes('content-type')) {
+      return 'application/json';
+    }
+    if (lowerHeaderName.includes('accept')) {
+      return 'application/json';
+    }
+    
+    return 'header-value';
+  }
+
+  private static combinePaths(basePath: string, path: string): string {
+    if (!basePath) return path;
+    if (!path) return basePath;
+    
+    const cleanBase = basePath.replace(/\/$/, '');
+    const cleanPath = path.replace(/^\//, '');
+    
+    return `${cleanBase}/${cleanPath}`;
+  }
+
+  private static async detectPort(): Promise<number> {
+    try {
+      const configFiles = ['application.properties', 'application.yml', 'application.yaml'];
+
+      for (const configFile of configFiles) {
+        const files = await vscode.workspace.findFiles(
+          `**/${configFile}`, 
+          '**/node_modules/**', 
+          1 // Limit to 1 file for performance
+        );
+        
+        if (files.length > 0) {
+          const content = require('fs').readFileSync(files[0].fsPath, 'utf8');
+          
+          if (configFile.endsWith('.properties')) {
+            const portMatch = content.match(/server\.port\s*=\s*(\d+)/);
+            if (portMatch) {
+              return parseInt(portMatch[1]);
+            }
+          } else {
+            const portMatch = content.match(/server:\s*\n\s*port:\s*(\d+)/);
+            if (portMatch) {
+              return parseInt(portMatch[1]);
             }
           }
         }
       }
+    } catch (error) {
+      console.log('Could not detect port from config files:', error);
     }
 
-    if (queryParams.length > 0) {
-      url += `?${queryParams.join('&')}`;
-    }
-
-    return { method, url, body };
+    return 8080; // Default Spring Boot port
   }
 
   public static async send(request: IRequest): Promise<void> {
     try {
-      const response = await axios({
-        method: request.method,
+      const config: AxiosRequestConfig = {
+        method: request.method.toLowerCase() as any,
         url: request.url,
-        data: request.body,
-        headers: request.headers,
-      });
-      vscode.window.showInformationMessage(`✅ ${response.status} ${response.statusText} | Response: ${JSON.stringify(response.data)}`);
+        headers: request.headers || {},
+        timeout: 30000,
+        validateStatus: () => true // Accept all status codes
+      };
+
+      if (request.body && ['POST', 'PUT', 'PATCH'].includes(request.method)) {
+        config.data = request.body;
+      }
+
+      const response = await axios(config);
+      
+      // Show response in notification
+      const responsePreview = response.data ? 
+        JSON.stringify(response.data).substring(0, 100) : 
+        response.statusText;
+      
+      const message = `${response.status >= 200 && response.status < 300 ? '✅' : '⚠️'} ${response.status} ${response.statusText} | ${responsePreview}${JSON.stringify(response.data || '').length > 100 ? '...' : ''}`;
+      
+      if (response.status >= 200 && response.status < 300) {
+        vscode.window.showInformationMessage(message);
+      } else {
+        vscode.window.showWarningMessage(message);
+      }
+      
+      // Show full response in new document if requested
+      const config2 = vscode.workspace.getConfiguration('springboot-http-client');
+      if (config2.get('showResponseInNewTab', true) && response.data) {
+        const responseDoc = await vscode.workspace.openTextDocument({
+          content: JSON.stringify(response.data, null, 2),
+          language: 'json'
+        });
+        await vscode.window.showTextDocument(responseDoc, vscode.ViewColumn.Beside);
+      }
+      
     } catch (error: any) {
-      vscode.window.showErrorMessage(`❌ ${error.message}`);
+      let errorMessage = '❌ Request failed';
+      
+      if (error.response) {
+        errorMessage = `❌ ${error.response.status} ${error.response.statusText}`;
+        if (error.response.data) {
+          const errorData = typeof error.response.data === 'string' 
+            ? error.response.data 
+            : JSON.stringify(error.response.data);
+          errorMessage += ` | ${errorData.substring(0, 100)}`;
+        }
+      } else if (error.code === 'ECONNREFUSED') {
+        errorMessage = '❌ Connection refused - Is the server running?';
+      } else if (error.code === 'ENOTFOUND') {
+        errorMessage = '❌ Host not found - Check the URL';
+      } else {
+        errorMessage = `❌ ${error.message}`;
+      }
+      
+      vscode.window.showErrorMessage(errorMessage);
     }
   }
 
   public static async generateFile(request: IRequest): Promise<void> {
-    let content = '';
-    if (request.url.startsWith('{{host}}')) {
-      content += '@host = change_me\n###\n';
+    try {
+      const config = vscode.workspace.getConfiguration('springboot-http-client');
+      const useEnvironmentVariables = config.get('useEnvironmentVariables', true);
+      
+      let content = '';
+      
+      if (useEnvironmentVariables) {
+        content += '### Environment Variables\n';
+        content += '@host = localhost:8080\n';
+        content += '@contentType = application/json\n';
+        content += '@accept = application/json\n';
+        content += '\n### Request\n';
+      }
+      
+      const url = useEnvironmentVariables ? 
+        request.url.replace(/https?:\/\/[^\/]+/, '{{host}}') : 
+        request.url;
+      
+      content += `${request.method} ${url}\n`;
+      
+      if (request.headers) {
+        for (const [key, value] of Object.entries(request.headers)) {
+          const headerValue = useEnvironmentVariables && key.toLowerCase() === 'content-type' ? '{{contentType}}' : 
+                            useEnvironmentVariables && key.toLowerCase() === 'accept' ? '{{accept}}' : value;
+          content += `${key}: ${headerValue}\n`;
+        }
+      }
+      
+      if (request.body) {
+        content += '\n' + request.body;
+      }
+      
+      content += '\n\n###\n';
+      
+      const document = await vscode.workspace.openTextDocument({ 
+        content, 
+        language: 'http' 
+      });
+      
+      await vscode.window.showTextDocument(document, vscode.ViewColumn.Beside);
+      vscode.window.showInformationMessage('📄 HTTP file generated successfully!');
+      
+    } catch (error) {
+      console.error('Error generating HTTP file:', error);
+      vscode.window.showErrorMessage(`Failed to generate HTTP file: ${error}`);
     }
-    content += `${request.method} ${request.url}\nAccept: application/json`;
-    if (request.body) {
-      content += `\nContent-Type: application/json\n\n${request.body}`;
+  }
+
+  public static async copyAsCurl(request: IRequest): Promise<void> {
+    try {
+      let curlCommand = `curl -X ${request.method}`;
+      
+      if (request.headers) {
+        for (const [key, value] of Object.entries(request.headers)) {
+          curlCommand += ` -H "${key}: ${value}"`;
+        }
+      }
+      
+      if (request.body) {
+        // Escape single quotes in the body
+        const escapedBody = request.body.replace(/'/g, "'\"'\"'");
+        curlCommand += ` -d '${escapedBody}'`;
+      }
+      
+      curlCommand += ` "${request.url}"`;
+      
+      await vscode.env.clipboard.writeText(curlCommand);
+      vscode.window.showInformationMessage('📋 cURL command copied to clipboard!');
+      
+    } catch (error) {
+      console.error('Error copying cURL command:', error);
+      vscode.window.showErrorMessage(`Failed to copy cURL command: ${error}`);
     }
-    const document = await vscode.workspace.openTextDocument({ content, language: 'http' });
-    await vscode.window.showTextDocument(document);
   }
 }
