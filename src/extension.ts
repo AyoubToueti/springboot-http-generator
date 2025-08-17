@@ -1,16 +1,17 @@
 import * as vscode from 'vscode';
 import { CodelensProvider } from './codelensProvider';
 import { HttpGenerator } from './HttpGenerator';
+import { AppDetector } from './AppDetector';
 
 let codelensProvider: CodelensProvider | undefined;
 let codeLensDisposable: vscode.Disposable | undefined;
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   console.log('Spring Boot HTTP Client extension activating...');
 
   try {
     // Only activate if we detect Spring Boot in the workspace
-    if (!isSpringBootWorkspace()) {
+    if (!await AppDetector.isSpringBootProject()) {
       console.log('No Spring Boot project detected, extension will remain dormant');
       // Still register commands but don't activate CodeLens
       registerCommands(context);
@@ -42,51 +43,6 @@ export function activate(context: vscode.ExtensionContext) {
     console.error('Error activating Spring Boot HTTP Client:', error);
     vscode.window.showErrorMessage(`Failed to activate Spring Boot HTTP Client: ${error}`);
   }
-}
-
-function isSpringBootWorkspace(): boolean {
-  try {
-    // Check for common Spring Boot indicators without heavy file system operations
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
-      return false;
-    }
-
-    // Quick check for Spring Boot files in open editors
-    const openDocuments = vscode.workspace.textDocuments;
-    for (const doc of openDocuments) {
-      if (doc.languageId === 'java') {
-        const text = doc.getText();
-        if (hasSpringBootAnnotations(text)) {
-          return true;
-        }
-      }
-    }
-
-    // If no open documents have Spring Boot code, assume false to avoid interference
-    // The extension will still register commands but won't show CodeLens
-    return false;
-    
-  } catch (error) {
-    console.error('Error checking for Spring Boot workspace:', error);
-    return false;
-  }
-}
-
-function hasSpringBootAnnotations(text: string): boolean {
-  const springBootIndicators = [
-    '@RestController',
-    '@Controller',
-    '@RequestMapping',
-    '@GetMapping',
-    '@PostMapping',
-    '@PutMapping',
-    '@DeleteMapping',
-    '@PatchMapping',
-    '@SpringBootApplication'
-  ];
-  
-  return springBootIndicators.some(indicator => text.includes(indicator));
 }
 
 function registerCommands(context: vscode.ExtensionContext) {

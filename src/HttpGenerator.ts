@@ -104,33 +104,38 @@ export class HttpGenerator {
 
   private static extractMappingInfo(annotationText: string): SpringMapping | undefined {
     try {
-      // Enhanced patterns with better error handling
+      // Normalize whitespace and remove newlines to simplify regex
+      const normalizedText = annotationText.replace(/\s+/g, ' ').trim();
+
+      // Patterns designed to be more robust to formatting
       const patterns = [
-        /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*"([^"]+)"\s*\)/,
-        /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*value\s*=\s*"([^"]+)"[^)]*\)/,
-        /@RequestMapping\s*\([^)]*method\s*=\s*RequestMethod\.(\w+)[^)]*(?:path|value)\s*=\s*"([^"]+)"[^)]*\)/,
-        /@RequestMapping\s*\([^)]*(?:path|value)\s*=\s*"([^"]+)"[^)]*method\s*=\s*RequestMethod\.(\w+)[^)]*\)/,
-        /@RequestMapping\s*\(\s*"([^"]+)"\s*\)/,
-        /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(\s*\))?$/
+        // Matches @GetMapping("/path"), @PostMapping(value = "/path"), etc.
+        /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?"([^"]*)"\s*\)/,
+        // Matches @RequestMapping(method = RequestMethod.POST, path = "/path")
+        /@RequestMapping\s*\([^)]*method\s*=\s*RequestMethod\.(\w+)[^)]*,?\s*(?:path|value)\s*=\s*"([^"]*)"[^)]*\)/,
+        // Matches @RequestMapping(path = "/path", method = RequestMethod.POST)
+        /@RequestMapping\s*\([^)]*(?:path|value)\s*=\s*"([^"]*)"[^)]*,?\s*method\s*=\s*RequestMethod\.(\w+)[^)]*\)/,
+        // Matches @RequestMapping("/path")
+        /@RequestMapping\s*\(\s*"([^"]*)"\s*\)/,
+        // Matches @GetMapping, @PostMapping, etc. with no path
+        /@(Get|Post|Put|Delete|Patch)Mapping/
       ];
 
       for (const pattern of patterns) {
-        const match = pattern.exec(annotationText);
+        const match = pattern.exec(normalizedText);
         if (match) {
           let method: HttpMethod;
           let path: string;
 
-          if (match[0].includes('RequestMapping')) {
-            if (match[2] && match[1]) {
-              // Pattern: method then path
+          if (normalizedText.includes('RequestMapping')) {
+            if (match[1] && match[2]) { // method, path
               method = match[1].toUpperCase() as HttpMethod;
               path = match[2] || '';
-            } else if (match[1] && match[2]) {
-              // Pattern: path then method
-              path = match[1] || '';
-              method = match[2]?.toUpperCase() as HttpMethod || 'GET';
-            } else {
-              method = 'GET';
+            } else if (match[1] && !match[2]) { // path only
+              method = 'GET'; // Default for RequestMapping
+              path = match[1];
+            } else { // path, method
+              method = match[2].toUpperCase() as HttpMethod;
               path = match[1] || '';
             }
           } else {
@@ -138,9 +143,8 @@ export class HttpGenerator {
             path = match[2] || '';
           }
 
-          // Extract consumes and produces safely
-          const consumes = this.extractArrayAttribute(annotationText, 'consumes');
-          const produces = this.extractArrayAttribute(annotationText, 'produces');
+          const consumes = this.extractArrayAttribute(normalizedText, 'consumes');
+          const produces = this.extractArrayAttribute(normalizedText, 'produces');
 
           return { method, path, consumes, produces };
         }
