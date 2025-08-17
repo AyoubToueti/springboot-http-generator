@@ -460,7 +460,8 @@ export class HttpGenerator {
           const content = require('fs').readFileSync(files[0].fsPath, 'utf8');
           
           if (configFile.endsWith('.properties')) {
-            const portMatch = content.match(/server\.port\s*=\s*(\d+)/);
+            const portRegex = /server\.port\s*[:=]\s*(\d+)/;
+            const portMatch = content.match(portRegex);
             if (portMatch) {
               return parseInt(portMatch[1]);
             }

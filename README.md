@@ -1,3 +1,4 @@
+![Your Extension Icon](icon/icon.png)
 # Spring Boot HTTP Client for VS Code
 
 A VS Code extension that brings IntelliJ IDEA Ultimate's HTTP client functionality to VS Code. Generate HTTP requests directly from your Spring Boot controller methods with a single click!

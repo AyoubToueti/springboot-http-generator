@@ -1,11 +1,16 @@
 {
   "name": "springboot-http-generator",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayoubtoueti/springboot-http-generator.git"
+  },
   "displayName": "springboot-http-generator",
   "description": "thiesan extension that generates HTTP client requests from Spring Boot controller methods — similar to IntelliJ’s \"Create HTTP Request\" feature",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.103.0"
   },
+  "icon": "icon/icon.png",
   "categories": [
     "Other",
     "Testing"
