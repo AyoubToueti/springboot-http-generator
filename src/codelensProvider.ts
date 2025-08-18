@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 
 export class CodelensProvider implements vscode.CodeLensProvider {
-  private _onDidChangeCodeLenses: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
+  private readonly _onDidChangeCodeLenses: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
   public readonly onDidChangeCodeLenses: vscode.Event<void> = this._onDidChangeCodeLenses.event;
   private debounceTimer: NodeJS.Timeout | undefined;
-  private cache: Map<string, vscode.CodeLens[]> = new Map();
+  private readonly cache: Map<string, vscode.CodeLens[]> = new Map();
 
   constructor() {
     // Only listen to Java file changes and debounce them
@@ -125,7 +125,7 @@ export class CodelensProvider implements vscode.CodeLensProvider {
     }
 
     // Method-level CodeLenses for individual requests
-    const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*(?:\([^)]*\))?/gm;
+    const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*(?:\([^)]*\))?/gm;
     
     let match;
     while ((match = mappingPattern.exec(text)) !== null) {

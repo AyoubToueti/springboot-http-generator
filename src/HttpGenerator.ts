@@ -57,7 +57,7 @@ export class HttpGenerator {
     }
 
     // Get class-level request mapping
-    const classMapping = this.extractClassMapping(fullText, document.positionAt(range.start.character).line);
+    const classMapping = this.extractClassMapping(fullText, range.start.line);
     
     // Extract method information
     const methodInfo = this.extractMethodInfo(text);
@@ -657,7 +657,7 @@ export class HttpGenerator {
   public static async generateAllRequestsInDocument(document: vscode.TextDocument): Promise<void> {
     try {
       const text = document.getText();
-      const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*(?:\([^)]*\))?/gm;
+      const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*(?:\([^)]*\))?/gm;
       let match;
       const requests: IRequest[] = [];
 

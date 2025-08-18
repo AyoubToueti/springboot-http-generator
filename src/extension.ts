@@ -72,12 +72,18 @@ function registerCommands(context: vscode.ExtensionContext) {
     'springboot.generateHttpRequest',
     async (document: vscode.TextDocument, range: vscode.Range) => {
       await executeWithErrorHandling('generate .http file', async () => {
-        const request = await HttpGenerator.generate(document, range);
-        if (request) {
-          await HttpGenerator.generateFile(request);
-        } else {
-          vscode.window.showWarningMessage('Could not generate HTTP request from the selected code');
-        }
+        await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: "Generating .http file...",
+          cancellable: true
+        }, async (progress, token) => {
+          const request = await HttpGenerator.generate(document, range);
+          if (request && !token.isCancellationRequested) {
+            await HttpGenerator.generateFile(request);
+          } else if (!request) {
+            vscode.window.showWarningMessage('Could not generate HTTP request from the selected code');
+          }
+        });
       });
     }
   );
@@ -102,7 +108,15 @@ function registerCommands(context: vscode.ExtensionContext) {
     'springboot.generateAllHttpRequestsInFile',
     async (document: vscode.TextDocument) => {
       await executeWithErrorHandling('generate all http requests', async () => {
-        await HttpGenerator.generateAllRequestsInDocument(document);
+        await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: "Generating all HTTP requests...",
+          cancellable: true
+        }, async (progress, token) => {
+          if (!token.isCancellationRequested) {
+            await HttpGenerator.generateAllRequestsInDocument(document);
+          }
+        });
       });
     }
   );
