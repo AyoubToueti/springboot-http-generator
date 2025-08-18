@@ -45,50 +45,26 @@ export class HttpGenerator {
     const text = document.getText(range);
     const fullText = document.getText();
     
-    // Validate input
-    if (!text.trim() || text.length > 10000) {
-      throw new Error('Invalid or too large code selection');
-    }
+    if (!text.trim() || text.length > 10000) throw new Error('Invalid or too large code selection');
 
-    // Extract mapping information
     const mapping = this.extractMappingInfo(text);
-    if (!mapping) {
-      throw new Error('Could not parse Spring mapping annotation');
-    }
+    if (!mapping) throw new Error('Could not parse Spring mapping annotation');
 
-    // Get class-level request mapping
     const classMapping = this.extractClassMapping(fullText, range.start.line);
     
-    // Extract method information
     const methodInfo = this.extractMethodInfo(text);
-    if (!methodInfo) {
-      throw new Error('Could not parse method signature');
-    }
+    if (!methodInfo) throw new Error('Could not parse method signature');
 
-    // Build complete path
     const basePath = classMapping || '';
     const fullPath = this.combinePaths(basePath, mapping.path);
     
-    // Process method parameters
-    const { url, body, headers, queryParams } = await this.processMethodParameters(
-      methodInfo.parameters, 
-      fullPath, 
-      mapping.method
-    );
+    const { url, body, headers } = await this.processMethodParameters(methodInfo.parameters, fullPath, mapping.method);
 
-    // Validate URL length
-    if (url.length > this.MAX_URL_LENGTH) {
-      throw new Error('Generated URL is too long');
-    }
+    if (url.length > this.MAX_URL_LENGTH) throw new Error('Generated URL is too long');
 
-    // Set content type headers
     const finalHeaders = { ...headers };
-    if (body && !finalHeaders['Content-Type']) {
-      finalHeaders['Content-Type'] = mapping.consumes?.[0] || 'application/json';
-    }
-    if (!finalHeaders['Accept']) {
-      finalHeaders['Accept'] = mapping.produces?.[0] || 'application/json';
-    }
+    if (body && !finalHeaders['Content-Type']) finalHeaders['Content-Type'] = mapping.consumes?.[0] || 'application/json';
+    if (!finalHeaders['Accept']) finalHeaders['Accept'] = mapping.produces?.[0] || 'application/json';
 
     const { port, contextPath } = await this.detectServerConfig();
     const baseUrl = `http://localhost:${port}${contextPath}`;
@@ -104,55 +80,56 @@ export class HttpGenerator {
 
   private static extractMappingInfo(annotationText: string): SpringMapping | undefined {
     try {
-      // Normalize whitespace and remove newlines to simplify regex
       const normalizedText = annotationText.replace(/\s+/g, ' ').trim();
-
-      // Patterns designed to be more robust to formatting
       const patterns = [
-        // Matches @GetMapping("/path"), @PostMapping(value = "/path"), etc.
         /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?"([^"]*)"\s*\)/,
-        // Matches @RequestMapping(method = RequestMethod.POST, path = "/path")
         /@RequestMapping\s*\([^)]*method\s*=\s*RequestMethod\.(\w+)[^)]*,?\s*(?:path|value)\s*=\s*"([^"]*)"[^)]*\)/,
-        // Matches @RequestMapping(path = "/path", method = RequestMethod.POST)
         /@RequestMapping\s*\([^)]*(?:path|value)\s*=\s*"([^"]*)"[^)]*,?\s*method\s*=\s*RequestMethod\.(\w+)[^)]*\)/,
-        // Matches @RequestMapping("/path")
         /@RequestMapping\s*\(\s*"([^"]*)"\s*\)/,
-        // Matches @GetMapping, @PostMapping, etc. with no path
         /@(Get|Post|Put|Delete|Patch)Mapping/
       ];
 
-      for (const pattern of patterns) {
-        const match = pattern.exec(normalizedText);
-        if (match) {
-          let method: HttpMethod;
-          let path: string;
+      const matchResult = this.matchSpringMappingPattern(normalizedText, patterns);
+      if (!matchResult) return undefined;
 
-          if (normalizedText.includes('RequestMapping')) {
-            if (match[1] && match[2]) { // method, path
-              method = match[1].toUpperCase() as HttpMethod;
-              path = match[2] || '';
-            } else if (match[1] && !match[2]) { // path only
-              method = 'GET'; // Default for RequestMapping
-              path = match[1];
-            } else { // path, method
-              method = match[2].toUpperCase() as HttpMethod;
-              path = match[1] || '';
-            }
-          } else {
-            method = match[1].toUpperCase() as HttpMethod;
-            path = match[2] || '';
-          }
-
-          const consumes = this.extractArrayAttribute(normalizedText, 'consumes');
-          const produces = this.extractArrayAttribute(normalizedText, 'produces');
-
-          return { method, path, consumes, produces };
-        }
-      }
+      const { method, path } = matchResult;
+      const consumes = this.extractArrayAttribute(normalizedText, 'consumes');
+      const produces = this.extractArrayAttribute(normalizedText, 'produces');
+      return { method, path, consumes, produces };
     } catch (error) {
       console.error('Error extracting mapping info:', error);
     }
+    return undefined;
+  }
 
+  private static matchSpringMappingPattern(
+    normalizedText: string,
+    patterns: RegExp[]
+  ): { method: HttpMethod; path: string } | undefined {
+    for (const pattern of patterns) {
+      const match = pattern.exec(normalizedText);
+      if (!match) continue;
+
+      let method: HttpMethod;
+      let path: string;
+
+      if (normalizedText.includes('RequestMapping')) {
+        if (match[1] && match[2]) {
+          method = match[1].toUpperCase() as HttpMethod;
+          path = match[2] || '';
+        } else if (match[1] && !match[2]) {
+          method = 'GET';
+          path = match[1];
+        } else {
+          method = match[2].toUpperCase() as HttpMethod;
+          path = match[1] || '';
+        }
+      } else {
+        method = match[1].toUpperCase() as HttpMethod;
+        path = match[2] || '';
+      }
+      return { method, path };
+    }
     return undefined;
   }
 
@@ -316,65 +293,74 @@ export class HttpGenerator {
   }
 
   private static async processMethodParameters(
-    parameters: MethodParameter[], 
-    basePath: string, 
+    parameters: MethodParameter[],
+    basePath: string,
     method: HttpMethod
   ): Promise<{ url: string, body?: string, headers: { [key: string]: string }, queryParams: string[] }> {
-    
+
     let url = basePath;
     let body: string | undefined;
     const headers: { [key: string]: string } = {};
     const queryParams: string[] = [];
-    
+
     try {
       for (const param of parameters) {
-        switch (param.annotation) {
-          case '@RequestBody':
-            if (!body) { // Only generate one body
-              body = await BodyGenerator.generate(param.type);
-            }
-            break;
-            
-          case '@PathVariable':
-            const pathVarName = this.extractAnnotationValue(param.annotation) || param.name;
-            const pathVarValue = this.generateSamplePathValue(param.type);
-            url = url.replace(`{${pathVarName}}`, pathVarValue);
-            break;
-            
-          case '@RequestParam':
-            const paramName = this.extractAnnotationValue(param.annotation) || param.name;
-            const paramValue = this.generateSampleQueryValue(param.type);
-            queryParams.push(`${paramName}=${paramValue}`);
-            break;
-            
-          case '@RequestHeader':
-            const headerName = this.extractAnnotationValue(param.annotation) || param.name;
-            const headerValue = this.generateSampleHeaderValue(param.type, headerName);
-            headers[headerName] = headerValue;
-            break;
-            
-          default:
-            // Handle parameters without annotations (likely @RequestParam for GET)
-            if (!param.annotation && method === 'GET' && queryParams.length < 10) {
-              const defaultParamValue = this.generateSampleQueryValue(param.type);
-              queryParams.push(`${param.name}=${defaultParamValue}`);
-            }
-            break;
+        if (param.annotation === '@RequestBody') {
+          body = await this.handleRequestBody(body, param);
+        } else if (param.annotation === '@PathVariable') {
+          url = this.handlePathVariable(url, param);
+        } else if (param.annotation === '@RequestParam') {
+          this.handleRequestParam(queryParams, param);
+        } else if (param.annotation === '@RequestHeader') {
+          this.handleRequestHeader(headers, param);
+        } else {
+          this.handleDefaultParam(queryParams, param, method);
         }
       }
-      
-      // Add query parameters to URL
+
       if (queryParams.length > 0) {
         const separator = url.includes('?') ? '&' : '?';
         const queryString = queryParams.join('&');
         url += separator + queryString;
       }
-      
+
     } catch (error) {
       console.error('Error processing method parameters:', error);
     }
-    
+
     return { url, body, headers, queryParams };
+  }
+
+  private static async handleRequestBody(body: string | undefined, param: MethodParameter): Promise<string | undefined> {
+    if (!body) {
+      return await BodyGenerator.generate(param.type);
+    }
+    return body;
+  }
+
+  private static handlePathVariable(url: string, param: MethodParameter): string {
+    const pathVarName = this.extractAnnotationValue(param.annotation!) || param.name;
+    const pathVarValue = this.generateSamplePathValue(param.type);
+    return url.replace(`{${pathVarName}}`, pathVarValue);
+  }
+
+  private static handleRequestParam(queryParams: string[], param: MethodParameter): void {
+    const paramName = this.extractAnnotationValue(param.annotation!) || param.name;
+    const paramValue = this.generateSampleQueryValue(param.type);
+    queryParams.push(`${paramName}=${paramValue}`);
+  }
+
+  private static handleRequestHeader(headers: { [key: string]: string }, param: MethodParameter): void {
+    const headerName = this.extractAnnotationValue(param.annotation!) || param.name;
+    const headerValue = this.generateSampleHeaderValue(param.type, headerName);
+    headers[headerName] = headerValue;
+  }
+
+  private static handleDefaultParam(queryParams: string[], param: MethodParameter, method: HttpMethod): void {
+    if (!param.annotation && method === 'GET' && queryParams.length < 10) {
+      const defaultParamValue = this.generateSampleQueryValue(param.type);
+      queryParams.push(`${param.name}=${defaultParamValue}`);
+    }
   }
 
   private static extractAnnotationValue(annotation: string): string | undefined {
@@ -601,8 +587,12 @@ export class HttpGenerator {
       
       if (request.headers) {
         for (const [key, value] of Object.entries(request.headers)) {
-          const headerValue = useEnvironmentVariables && key.toLowerCase() === 'content-type' ? '{{contentType}}' : 
-                            useEnvironmentVariables && key.toLowerCase() === 'accept' ? '{{accept}}' : value;
+          let headerValue = value;
+          if (useEnvironmentVariables && key.toLowerCase() === 'content-type') {
+            headerValue = '{{contentType}}';
+          } else if (useEnvironmentVariables && key.toLowerCase() === 'accept') {
+            headerValue = '{{accept}}';
+          }
           content += `${key}: ${headerValue}\n`;
         }
       }
@@ -657,49 +647,10 @@ export class HttpGenerator {
   public static async generateAllRequestsInDocument(document: vscode.TextDocument): Promise<void> {
     try {
       const text = document.getText();
-      const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*(?:\([^)]*\))?/gm;
-      let match;
-      const requests: IRequest[] = [];
-
-      while ((match = mappingPattern.exec(text)) !== null) {
-        const annotationEndPos = document.positionAt(match.index + match[0].length);
-        const methodRange = this.findMethodAfterAnnotation(document, annotationEndPos);
-
-        if (methodRange) {
-          const range = new vscode.Range(
-            document.positionAt(match.index),
-            methodRange.end
-          );
-          const request = await this.generate(document, range);
-          if (request) {
-            requests.push(request);
-          }
-        }
-      }
+      const requests = await this.collectRequestsFromDocument(document, text);
 
       if (requests.length > 0) {
-        const { port, contextPath } = await this.detectServerConfig();
-        let httpFileContent = `### Environment Variables\n@host = http://localhost:${port}${contextPath}\n@contentType = application/json\n@accept = application/json\n\n###\n\n`;
-        
-        for (const request of requests) {
-          const url = request.url.replace(/https?:\/\/[^\/]+(\/[^\/]+)?/, '{{host}}');
-          httpFileContent += `${request.method} ${url}\n`;
-          if (request.headers) {
-            for (const [key, value] of Object.entries(request.headers)) {
-              httpFileContent += `${key}: ${value}\n`;
-            }
-          }
-          if (request.body) {
-            httpFileContent += `\n${request.body}\n`;
-          }
-          httpFileContent += '\n###\n\n';
-        }
-
-        const httpDocument = await vscode.workspace.openTextDocument({
-          content: httpFileContent,
-          language: 'http'
-        });
-        await vscode.window.showTextDocument(httpDocument, vscode.ViewColumn.Beside);
+        await this.showAllRequestsInHttpFile(requests);
       } else {
         vscode.window.showInformationMessage('No Spring Boot endpoints found in the current file.');
       }
@@ -707,5 +658,62 @@ export class HttpGenerator {
       console.error('Error generating all HTTP requests:', error);
       vscode.window.showErrorMessage(`Failed to generate all HTTP requests: ${error}`);
     }
+  }
+
+  private static async collectRequestsFromDocument(document: vscode.TextDocument, text: string): Promise<IRequest[]> {
+    const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*(?:\([^)]*\))?/gm;
+    let match;
+    const requests: IRequest[] = [];
+
+    while ((match = mappingPattern.exec(text)) !== null) {
+      const request = await this.tryGenerateRequestFromMatch(document, match);
+      if (request) {
+        requests.push(request);
+      }
+    }
+    return requests;
+  }
+
+  private static async tryGenerateRequestFromMatch(document: vscode.TextDocument, match: RegExpExecArray): Promise<IRequest | undefined> {
+    const annotationEndPos = document.positionAt(match.index + match[0].length);
+    const methodRange = this.findMethodAfterAnnotation(document, annotationEndPos);
+
+    if (!methodRange) return undefined;
+
+    const range = new vscode.Range(
+      document.positionAt(match.index),
+      methodRange.end
+    );
+    return await this.generate(document, range);
+  }
+
+  private static async showAllRequestsInHttpFile(requests: IRequest[]): Promise<void> {
+    const { port, contextPath } = await this.detectServerConfig();
+    let httpFileContent = `### Environment Variables\n@host = http://localhost:${port}${contextPath}\n@contentType = application/json\n@accept = application/json\n\n###\n\n`;
+
+    for (const request of requests) {
+      httpFileContent += this.formatRequestForHttpFile(request);
+    }
+
+    const httpDocument = await vscode.workspace.openTextDocument({
+      content: httpFileContent,
+      language: 'http'
+    });
+    await vscode.window.showTextDocument(httpDocument, vscode.ViewColumn.Beside);
+  }
+
+  private static formatRequestForHttpFile(request: IRequest): string {
+    const url = request.url.replace(/https?:\/\/[^\/]+(\/[^\/]+)?/, '{{host}}');
+    let content = `${request.method} ${url}\n`;
+    if (request.headers) {
+      for (const [key, value] of Object.entries(request.headers)) {
+        content += `${key}: ${value}\n`;
+      }
+    }
+    if (request.body) {
+      content += `\n${request.body}\n`;
+    }
+    content += '\n###\n\n';
+    return content;
   }
 }

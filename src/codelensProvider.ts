@@ -170,22 +170,21 @@ export class CodelensProvider implements vscode.CodeLensProvider {
   }
 
   private findMethodAfterAnnotation(
-    document: vscode.TextDocument, 
+    document: vscode.TextDocument,
     startPos: vscode.Position
   ): vscode.Range | null {
     try {
       const text = document.getText();
       const startOffset = document.offsetAt(startPos);
       const remainingText = text.substring(startOffset);
-      
-      // Look for method declaration within reasonable distance (max 5 lines)
-      const methodPattern = /^\s*(public|private|protected)?\s*(static)?\s*[\w<>\[\],\s]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{/m;
+
+      const methodPattern = /^\s*(public|private|protected)?\s*(static)?\s*[\w<>[\]\s,]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w\s,]+)?\s*\{/m;
       const methodMatch = methodPattern.exec(remainingText);
-      
-      if (methodMatch && methodMatch.index < 500) { // Reasonable distance check
+
+      if (methodMatch && methodMatch.index < 500) {
         const methodStart = startOffset + methodMatch.index;
         const methodEnd = methodStart + methodMatch[0].length;
-        
+
         return new vscode.Range(
           document.positionAt(methodStart),
           document.positionAt(methodEnd)
@@ -194,7 +193,7 @@ export class CodelensProvider implements vscode.CodeLensProvider {
     } catch (error) {
       console.error('Error finding method after annotation:', error);
     }
-    
+
     return null;
   }
 

@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { promises as fs } from 'fs';
-import * as path from 'path';
 
 interface JavaField {
   name: string;
@@ -10,12 +9,12 @@ interface JavaField {
 }
 
 export class BodyGenerator {
-  private static cache: Map<string, string> = new Map();
+  private static readonly cache: Map<string, string> = new Map();
   private static readonly MAX_CACHE_SIZE = 100;
   private static readonly MAX_FILE_SIZE = 1024 * 1024; // 1MB limit
   private static readonly GENERATION_TIMEOUT = 5000; // 5 second timeout
 
-  private static typeMapping: { [key: string]: any } = {
+  private static readonly typeMapping: { [key: string]: any } = {
     'String': 'example',
     'Integer': 42,
     'int': 42,
@@ -194,7 +193,7 @@ export class BodyGenerator {
       let genericType: string | undefined;
 
       if (isCollection) {
-        const genericMatch = fullType.match(/<([^<>]+)>/);
+        const genericMatch = /<([^<>]+)>/.exec(fullType);
         if (genericMatch) {
           genericType = genericMatch[1].trim();
           type = fullType.split('<')[0];
@@ -265,16 +264,13 @@ export class BodyGenerator {
   }
 
   private static async generateCollectionValue(field: JavaField, visited: Set<string>): Promise<any[]> {
-    const array: any[] = [];
-    
     if (field.genericType && !visited.has(field.genericType)) {
       const sampleValue = await this.generateValueByType(field.genericType, visited);
       if (sampleValue !== undefined) {
-        array.push(sampleValue);
+        return [sampleValue];
       }
     }
-    
-    return array;
+    return [];
   }
 
   private static async generateFieldValue(field: JavaField, visited: Set<string>): Promise<any> {

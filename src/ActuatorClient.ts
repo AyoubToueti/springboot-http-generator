@@ -31,6 +31,7 @@ export class ActuatorClient {
       const mappings = response.data.contexts[Object.keys(response.data.contexts)[0]].mappings.dispatcherServlets;
       return mappings[Object.keys(mappings)[0]];
     } catch (error) {
+      console.error('Failed to fetch actuator mappings:', error);
       return [];
     }
   }
