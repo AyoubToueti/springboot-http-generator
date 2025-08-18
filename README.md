@@ -146,7 +146,7 @@ Automatically replaces path variables with appropriate sample values:
 
 ## Contributing
 
-Found a bug or want to suggest a feature? Please open an issue on our [GitHub repository](https://github.com/your-username/springboot-http-client).
+Found a bug or want to suggest a feature? Please open an issue on our [GitHub repository](https://github.com/ayoubtoueti/springboot-http-generator).
 
 ## License
 

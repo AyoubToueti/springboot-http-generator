@@ -110,7 +110,7 @@ export class CodelensProvider implements vscode.CodeLensProvider {
     const text = document.getText();
     
     // More specific patterns to avoid false positives
-    const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*(?:\([^)]*\))?\s*(?:\/\/.*)?$/gm;
+    const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*(?:\([^)]*\))?\s*(?:\/\/.*)?$/gm;
     
     let match;
     while ((match = mappingPattern.exec(text)) !== null) {
