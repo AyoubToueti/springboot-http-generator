@@ -109,12 +109,26 @@ export class CodelensProvider implements vscode.CodeLensProvider {
     const codeLenses: vscode.CodeLens[] = [];
     const text = document.getText();
     
-    // More specific patterns to avoid false positives
-    const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*(?:\([^)]*\))?\s*(?:\/\/.*)?$/gm;
+    // Class-level CodeLens for generating all requests
+    const classPattern = /@RestController|@Controller/g;
+    let classMatch;
+    if ((classMatch = classPattern.exec(text)) !== null) {
+      const classPosition = document.positionAt(classMatch.index);
+      const classRange = new vscode.Range(classPosition, classPosition);
+      codeLenses.push(
+        new vscode.CodeLens(classRange, {
+          title: "📄 Generate All Requests",
+          command: "springboot.generateAllHttpRequestsInFile",
+          arguments: [document]
+        })
+      );
+    }
+
+    // Method-level CodeLenses for individual requests
+    const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*(?:\([^)]*\))?/gm;
     
     let match;
     while ((match = mappingPattern.exec(text)) !== null) {
-      // Check for cancellation during processing
       if (token.isCancellationRequested) {
         break;
       }
@@ -122,11 +136,9 @@ export class CodelensProvider implements vscode.CodeLensProvider {
       const matchStart = match.index;
       const annotationEndPos = document.positionAt(matchStart + match[0].length);
       
-      // Find the method declaration following the annotation
       const methodRange = this.findMethodAfterAnnotation(document, annotationEndPos);
       if (!methodRange) continue;
 
-      // Verify this is actually a controller method by checking for method modifiers
       const methodText = document.getText(methodRange);
       if (!this.isControllerMethod(methodText)) continue;
 
@@ -135,7 +147,6 @@ export class CodelensProvider implements vscode.CodeLensProvider {
         methodRange.end
       );
 
-      // Add code lenses with more specific titles
       codeLenses.push(
         new vscode.CodeLens(range, {
           title: "🚀 Send Request",

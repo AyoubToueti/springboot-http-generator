@@ -97,6 +97,16 @@ function registerCommands(context: vscode.ExtensionContext) {
     }
   );
 
+  // Command: Generate All HTTP Requests in File
+  const generateAllHttpRequestsInFileCommand = vscode.commands.registerCommand(
+    'springboot.generateAllHttpRequestsInFile',
+    async (document: vscode.TextDocument) => {
+      await executeWithErrorHandling('generate all http requests', async () => {
+        await HttpGenerator.generateAllRequestsInDocument(document);
+      });
+    }
+  );
+
   // Configuration commands
   const enableCodeLensCommand = vscode.commands.registerCommand(
     'springboot.enableCodeLens',
@@ -122,7 +132,8 @@ function registerCommands(context: vscode.ExtensionContext) {
     generateHttpCommand,
     copyAsCurlCommand,
     enableCodeLensCommand,
-    disableCodeLensCommand
+    disableCodeLensCommand,
+    generateAllHttpRequestsInFileCommand
   );
 }
 

@@ -90,8 +90,8 @@ export class HttpGenerator {
       finalHeaders['Accept'] = mapping.produces?.[0] || 'application/json';
     }
 
-    const port = await this.detectPort();
-    const baseUrl = `http://localhost:${port}`;
+    const { port, contextPath } = await this.detectServerConfig();
+    const baseUrl = `http://localhost:${port}${contextPath}`;
     const finalUrl = url.startsWith('http') ? url : `${baseUrl}${url}`;
 
     return {
@@ -445,39 +445,74 @@ export class HttpGenerator {
     return `${cleanBase}/${cleanPath}`;
   }
 
-  private static async detectPort(): Promise<number> {
+  private static async detectServerConfig(): Promise<{ port: number, contextPath: string }> {
+    let port = 8080; // Default port
+    let contextPath = ''; // Default context path
+
     try {
       const configFiles = ['application.properties', 'application.yml', 'application.yaml'];
 
       for (const configFile of configFiles) {
-        const files = await vscode.workspace.findFiles(
-          `**/${configFile}`, 
-          '**/node_modules/**', 
-          1 // Limit to 1 file for performance
-        );
+        const files = await vscode.workspace.findFiles(`**/${configFile}`, '**/node_modules/**', 1);
         
         if (files.length > 0) {
           const content = require('fs').readFileSync(files[0].fsPath, 'utf8');
           
           if (configFile.endsWith('.properties')) {
-            const portRegex = /server\.port\s*[:=]\s*(\d+)/;
-            const portMatch = content.match(portRegex);
+            const portMatch = content.match(/server\.port\s*[:=]\s*(\d+)/);
             if (portMatch) {
-              return parseInt(portMatch[1]);
+              port = parseInt(portMatch[1], 10);
             }
-          } else {
+            const contextPathMatch = content.match(/server\.servlet\.context-path\s*=\s*([^\s]+)/);
+            if (contextPathMatch) {
+              contextPath = contextPathMatch[1];
+            }
+          } else { // YAML files
             const portMatch = content.match(/server:\s*\n\s*port:\s*(\d+)/);
             if (portMatch) {
-              return parseInt(portMatch[1]);
+              port = parseInt(portMatch[1], 10);
+            }
+            const contextPathMatch = content.match(/server:\s*\n\s*servlet:\s*\n\s*context-path:\s*([^\s]+)/);
+            if (contextPathMatch) {
+              contextPath = contextPathMatch[1];
             }
           }
         }
       }
     } catch (error) {
-      console.log('Could not detect port from config files:', error);
+      console.warn('Could not detect server config from files:', error);
     }
 
-    return 8080; // Default Spring Boot port
+    return { port, contextPath };
+  }
+
+  private static findMethodAfterAnnotation(
+    document: vscode.TextDocument, 
+    startPos: vscode.Position
+  ): vscode.Range | null {
+    try {
+      const text = document.getText();
+      const startOffset = document.offsetAt(startPos);
+      const remainingText = text.substring(startOffset);
+      
+      // Look for method declaration within reasonable distance (max 5 lines)
+      const methodPattern = /^\s*(public|private|protected)?\s*(static)?\s*[\w<>\[\],\s]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{/m;
+      const methodMatch = methodPattern.exec(remainingText);
+      
+      if (methodMatch && methodMatch.index < 500) { // Reasonable distance check
+        const methodStart = startOffset + methodMatch.index;
+        const methodEnd = methodStart + methodMatch[0].length;
+        
+        return new vscode.Range(
+          document.positionAt(methodStart),
+          document.positionAt(methodEnd)
+        );
+      }
+    } catch (error) {
+      console.error('Error finding method after annotation:', error);
+    }
+    
+    return null;
   }
 
   public static async send(request: IRequest): Promise<void> {
@@ -550,15 +585,16 @@ export class HttpGenerator {
       let content = '';
       
       if (useEnvironmentVariables) {
+        const { port, contextPath } = await this.detectServerConfig();
         content += '### Environment Variables\n';
-        content += '@host = localhost:8080\n';
+        content += `@host = http://localhost:${port}${contextPath}\n`;
         content += '@contentType = application/json\n';
         content += '@accept = application/json\n';
         content += '\n### Request\n';
       }
       
       const url = useEnvironmentVariables ? 
-        request.url.replace(/https?:\/\/[^\/]+/, '{{host}}') : 
+        request.url.replace(/https?:\/\/[^\/]+(\/[^\/]+)?/, '{{host}}') :
         request.url;
       
       content += `${request.method} ${url}\n`;
@@ -615,6 +651,61 @@ export class HttpGenerator {
     } catch (error) {
       console.error('Error copying cURL command:', error);
       vscode.window.showErrorMessage(`Failed to copy cURL command: ${error}`);
+    }
+  }
+
+  public static async generateAllRequestsInDocument(document: vscode.TextDocument): Promise<void> {
+    try {
+      const text = document.getText();
+      const mappingPattern = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*(?:\([^)]*\))?/gm;
+      let match;
+      const requests: IRequest[] = [];
+
+      while ((match = mappingPattern.exec(text)) !== null) {
+        const annotationEndPos = document.positionAt(match.index + match[0].length);
+        const methodRange = this.findMethodAfterAnnotation(document, annotationEndPos);
+
+        if (methodRange) {
+          const range = new vscode.Range(
+            document.positionAt(match.index),
+            methodRange.end
+          );
+          const request = await this.generate(document, range);
+          if (request) {
+            requests.push(request);
+          }
+        }
+      }
+
+      if (requests.length > 0) {
+        const { port, contextPath } = await this.detectServerConfig();
+        let httpFileContent = `### Environment Variables\n@host = http://localhost:${port}${contextPath}\n@contentType = application/json\n@accept = application/json\n\n###\n\n`;
+        
+        for (const request of requests) {
+          const url = request.url.replace(/https?:\/\/[^\/]+(\/[^\/]+)?/, '{{host}}');
+          httpFileContent += `${request.method} ${url}\n`;
+          if (request.headers) {
+            for (const [key, value] of Object.entries(request.headers)) {
+              httpFileContent += `${key}: ${value}\n`;
+            }
+          }
+          if (request.body) {
+            httpFileContent += `\n${request.body}\n`;
+          }
+          httpFileContent += '\n###\n\n';
+        }
+
+        const httpDocument = await vscode.workspace.openTextDocument({
+          content: httpFileContent,
+          language: 'http'
+        });
+        await vscode.window.showTextDocument(httpDocument, vscode.ViewColumn.Beside);
+      } else {
+        vscode.window.showInformationMessage('No Spring Boot endpoints found in the current file.');
+      }
+    } catch (error) {
+      console.error('Error generating all HTTP requests:', error);
+      vscode.window.showErrorMessage(`Failed to generate all HTTP requests: ${error}`);
     }
   }
 }
