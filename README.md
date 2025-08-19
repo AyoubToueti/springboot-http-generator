@@ -38,6 +38,7 @@ A VS Code extension that brings IntelliJ IDEA Ultimate's HTTP client functionali
 
 3. **Look for CodeLenses** above your mapping annotations:
    ```java
+   // <- CodeLens appears here
    @RestController
    @RequestMapping("/api/users")
    public class UserController {
@@ -55,8 +56,9 @@ A VS Code extension that brings IntelliJ IDEA Ultimate's HTTP client functionali
    ```
 
 4. **Click the CodeLens options**:
+   - 📄 **Generate All Request**: Create a .http file for the REST Client extension that contains all mapped requests in the controller
    - 🚀 **Send Request**: Execute the HTTP request immediately
-   - 📄 **Generate .http File**: Create a .http file for the REST Client extension
+   - 📄 **Generate .http File**: Create a .http file for the REST Client extension for specific request
    - 📋 **Copy as cURL**: Copy the request as a cURL command
 
 ## Generated Examples
@@ -111,9 +113,9 @@ Access settings via `File > Preferences > Settings` and search for "Spring Boot 
 ## Smart Features
 
 ### 🧠 Automatic Port Detection
-The extension automatically detects your Spring Boot application's port from:
-- `application.properties` (`server.port=8080`)
-- `application.yml`/`application.yaml` (`server.port: 8080`)
+The extension automatically detects your Spring Boot application's port and context path from:
+- `application.properties` (`server.port=8080`, `server.servlet.context-path=/api`)
+- `application.yml`/`application.yaml` (`server.port: 8080`, `server.servlet.context-path: /api`)
 - Defaults to 8080 if not found
 
 ### 📊 Realistic Sample Data Generation
@@ -141,7 +143,7 @@ Automatically replaces path variables with appropriate sample values:
 
 - Only supports Java Spring Boot projects
 - Requires well-formatted Spring annotations
-- Complex generic types may not be fully supported
+- Complex generic types may not be fully supported or may take longer to generate
 - Circular references in model classes are handled with empty objects
 
 ## Contributing
