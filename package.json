@@ -156,6 +156,7 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
+    "@vscode/vsce": "^3.6.0",
     "axios": "^1.11.0",
     "java-parser": "^3.0.1"
   }
